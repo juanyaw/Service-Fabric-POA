@@ -12,12 +12,15 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
 
     using System.ComponentModel;
     using System.IO;
+    using Microsoft.Win32;
 
     /// <summary>
     /// Manages the search, download and installation of Windows updates. It also takes care of restarting the system, if required after installation of updates.
     /// </summary>
     class WindowsUpdateManager
     {
+        private const string MaintenanceRegistryKey = @"SOFTWARE\Microsoft\Service Fabric\PatchOrchestration";
+
         private readonly ServiceEventSource _eventSource = ServiceEventSource.Current;
         private readonly OperationResultFormatter _operationResultFormatter;
         private readonly Helper _helper;
@@ -210,6 +213,32 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
                     _eventSource.WarningMessage("Invalid WU state : " +  wuOperationState);
                     break;
             }
+        }
+
+        private enum MaintenanceRequest
+        {
+            None = 0,
+            RestartServices = 1,
+            Reboot = 2
+        }
+
+        private MaintenanceRequest StartMaintenanceCheck()
+        {
+            MaintenanceRequest maintenanceRequest = MaintenanceRequest.None;
+            var key = Registry.LocalMachine.OpenSubKey(MaintenanceRegistryKey);
+            if (key != null)
+            {
+                using (key)
+                {
+                    var currentRequestState = key.GetValue(null) as int?;
+
+                    if (currentRequestState != null)
+                    {
+                        maintenanceRequest = (MaintenanceRequest)currentRequestState;
+                    }
+                }
+            }
+            return maintenanceRequest;
         }
 
         /// <summary>
@@ -488,26 +517,30 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             return reschedule;
         }
 
-        private NodeAgentSfUtilityExitCodes WaitForInstallationApproval(CancellationToken cancellationToken)
+        private NodeAgentSfUtilityExitCodes WaitForInstallationApproval(CancellationToken cancellationToken) => WaitForNodeActionApproval("Installation", cancellationToken);
+
+        private NodeAgentSfUtilityExitCodes WaitForMaintenanceApproval(CancellationToken cancellationToken) => WaitForNodeActionApproval("Maintenance", cancellationToken);
+
+        private NodeAgentSfUtilityExitCodes WaitForNodeActionApproval(string action, CancellationToken cancellationToken)
         {
-            _eventSource.InfoMessage("Waiting for Installation approval.");
+            _eventSource.InfoMessage($"Waiting for {action} approval.");
             while (!cancellationToken.IsCancellationRequested)
             {
-                NodeAgentSfUtilityExitCodes wuOperationState = this._nodeAgentSfUtility.GetWuOperationState(TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes));
+                NodeAgentSfUtilityExitCodes operationState = this._nodeAgentSfUtility.GetWuOperationState(TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes));
 
-                if (wuOperationState.Equals(NodeAgentSfUtilityExitCodes.InstallationApproved)) 
+                if (operationState.Equals(NodeAgentSfUtilityExitCodes.InstallationApproved))
                 {
-                    _eventSource.InfoMessage("Installation Approved.");
-                    return wuOperationState;
+                    _eventSource.InfoMessage($"{action} Approved.");
+                    return operationState;
                 }
-                else if(wuOperationState.Equals(NodeAgentSfUtilityExitCodes.OperationCompleted) || wuOperationState.Equals(NodeAgentSfUtilityExitCodes.None))
+                else if (operationState.Equals(NodeAgentSfUtilityExitCodes.OperationCompleted) || operationState.Equals(NodeAgentSfUtilityExitCodes.None))
                 {
-                    _eventSource.InfoMessage("Installation Approval failed.");
+                    _eventSource.InfoMessage($"{action} Approval failed.");
                     return NodeAgentSfUtilityExitCodes.Failure;
                 }
                 this._helper.WaitOnTask(Task.Delay(TimeSpan.FromMinutes(this._serviceSettings.WUDelayBetweenRetriesInMinutes)), cancellationToken);
             }
-            _eventSource.InfoMessage("Installation Approval failed.");
+            _eventSource.InfoMessage($"{action} Approval failed.");
             return NodeAgentSfUtilityExitCodes.Failure;
         }
 
