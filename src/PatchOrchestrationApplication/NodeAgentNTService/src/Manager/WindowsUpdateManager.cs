@@ -222,7 +222,7 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             Reboot = 2
         }
 
-        private MaintenanceRequest StartMaintenanceCheck()
+        private MaintenanceRequest GetMaintenanceCheck()
         {
             MaintenanceRequest maintenanceRequest = MaintenanceRequest.None;
             var key = Registry.LocalMachine.OpenSubKey(MaintenanceRegistryKey);
@@ -230,11 +230,35 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             {
                 using (key)
                 {
-                    var currentRequestState = key.GetValue(null) as int?;
+                    var currentRequestState = key.GetValue(null) as string;
 
-                    if (currentRequestState != null)
+                    if (string.IsNullOrWhiteSpace(currentRequestState) || !Enum.TryParse(currentRequestState, out maintenanceRequest))
                     {
-                        maintenanceRequest = (MaintenanceRequest)currentRequestState;
+                        maintenanceRequest = MaintenanceRequest.None;
+                    }
+                }
+            }
+            return maintenanceRequest;
+        }
+
+        private MaintenanceRequest ResetMaintenanceCheck()
+        {
+            MaintenanceRequest maintenanceRequest = MaintenanceRequest.None;
+            var key = Registry.LocalMachine.OpenSubKey(MaintenanceRegistryKey, true);
+            if (key != null)
+            {
+                using (key)
+                {
+                    var currentRequestState = key.GetValue(null) as string;
+
+                    if (string.IsNullOrWhiteSpace(currentRequestState) || !Enum.TryParse(currentRequestState, out maintenanceRequest))
+                    {
+                        maintenanceRequest = MaintenanceRequest.None;
+                    }
+
+                    if (maintenanceRequest != MaintenanceRequest.None)
+                    {
+                        key.SetValue(null, string.Empty);
                     }
                 }
             }
@@ -353,8 +377,9 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         }
 
         private bool StartUpdateUtil(CancellationToken cancellationToken)
-        {
+        { 
             _eventSource.InfoMessage("Windows Update Started.");
+
             try
             {
                 return HandleWUOperationStates(cancellationToken);
@@ -371,6 +396,12 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         {
             TimeSpan utilityTaskTimeOut = TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes);
             NodeAgentSfUtilityExitCodes wuOperationState = this._nodeAgentSfUtility.GetWuOperationState(utilityTaskTimeOut);
+            _eventSource.InfoMessage("Maintenance Request Check Started.");
+
+            var maintenanceRequest = GetMaintenanceCheck();
+
+            _eventSource.InfoMessage("Maintenance Request: {0}", maintenanceRequest);
+
             _eventSource.InfoMessage("Current WU Operation State : {0}", wuOperationState);
 
             bool reschedule = false;
@@ -387,14 +418,35 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
                         {
                             if (this._wuCollectionWrapper.Collection.Count == 0)
                             {
-                                _eventSource.InfoMessage("No Windows Update available. Completing the operation.");
-                                //Complete operation.
-                                this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(
-                                    NodeAgentSfUtilityExitCodes.OperationCompleted,
-                                    this._operationResultFormatter.CreateSearchAndDownloadDummyResult(this.lastUpdateOperationStartTimeStamp),
-                                    utilityTaskTimeOut
-                                );
+                                if (maintenanceRequest == MaintenanceRequest.RestartServices)
+                                {
+                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequest);
+                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(NodeAgentSfUtilityExitCodes.DownloadCompleted, null, utilityTaskTimeOut);
+                                    ResetMaintenanceCheck();
 
+                                    this._nodeAgentSfUtility.UpdateInstallationStatus(
+                                        NodeAgentSfUtilityExitCodes.OperationCompleted,
+                                        null,
+                                        utilityTaskTimeOut);
+
+                                }
+                                else if (maintenanceRequest == MaintenanceRequest.Reboot)
+                                {
+                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequest);
+                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(NodeAgentSfUtilityExitCodes.DownloadCompleted, null, utilityTaskTimeOut);
+                                    ResetMaintenanceCheck();
+                                    RestartSystem();
+                                }
+                                else
+                                {
+                                    _eventSource.InfoMessage("No Windows Update available. Completing the operation.");
+                                    //Complete operation.
+                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(
+                                        NodeAgentSfUtilityExitCodes.OperationCompleted,
+                                        this._operationResultFormatter.CreateSearchAndDownloadDummyResult(this.lastUpdateOperationStartTimeStamp),
+                                        utilityTaskTimeOut
+                                    );
+                                }
                                 break;
                             }
                             string wUStatusUpdate = string.Format("Windows update download started.");
