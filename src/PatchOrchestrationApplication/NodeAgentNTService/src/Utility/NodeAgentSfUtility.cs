@@ -13,6 +13,13 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Utility
     using Common;
     using Manager;
 
+    internal enum MaintenanceRequest
+    {
+        None = 0,
+        RestartServices = 1,
+        Reboot = 2
+    }
+
     /// <summary>
     /// Utility for carrying out operations on Repair Manager.
     /// For V1 of the POS service we'll be implementing this interface in both NTService and SFUtility executable
@@ -121,6 +128,45 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Utility
 
             }            
             throw new Exception("Not able to update installation status.");            
+        }
+
+        /// <summary>
+        /// Update the status for maintenance request
+        /// </summary>
+        /// <param name="maintenanceRequest">Maintenance request</param>
+        /// <param name="timeout">Timeout for command</param>
+        /// <returns>true if operation is success else false.</returns>
+        public bool UpdateMaintenanceRequestStatus(MaintenanceRequest maintenanceRequest, TimeSpan timeout = default(TimeSpan))
+        {
+            string filePath = Path.Combine(this._settingsManager.TempFolder, OperationResultFileName);
+            string[] arguments = new string[]
+            {
+                nameof(UpdateMaintenanceRequestStatus),
+                this._nodeName,
+                (MaintenanceRequest.Reboot == maintenanceRequest).ToString(),
+                this._serviceSettings.WUOperationTimeOutInMinutes.ToString(),
+                timeout.TotalSeconds.ToString()
+            };
+
+            ProcessExecutor processExecutor = new ProcessExecutor(SfUtilityFileName, CreateProcessArgument(arguments));
+
+            long retries = 0;
+            while (!this._cancellationToken.IsCancellationRequested)
+            {
+                if (processExecutor.Execute() == 0)
+                {
+                    return true;
+                }
+                if (retries >= this._serviceSettings.WUOperationRetryCount || this._cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                TimeSpan retryDelayTime = TimeSpan.FromMinutes(this._serviceSettings.WUDelayBetweenRetriesInMinutes);
+                this._helper.WaitOnTask(Task.Delay(retryDelayTime), this._cancellationToken);
+                retries++;
+            }
+            throw new Exception("Not able to update status for maintenance request.");
         }
 
         /// <summary>
@@ -250,7 +296,13 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Utility
             }
 
             throw new Exception("Not able to get application status.");
-        }        
+        }
+
+        /// <inheritdoc />
+        public Task<NodeAgentSfUtilityExitCodes> UpdateMaintenanceRequestStatusAsync(String nodeName, bool rebootRequested, int maintenanceTimeout, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
 
         public Task<NodeAgentSfUtilityExitCodes> GetWuOperationStateAsync(string nodeName, TimeSpan timeout, CancellationToken cancellationToken)
         {

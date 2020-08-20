@@ -47,6 +47,8 @@
     <Parameter Name="WUFrequency" DefaultValue="Weekly,Wednesday,7:00:00" />
     <!-- This flag enables the NodeAgentService to accept EULA for windows update on behalf of user -->
     <Parameter Name="AcceptWindowsUpdateEula" DefaultValue="true" />
+    <!-- Directory where maintenance requests can be placed-->
+    <Parameter Name="MaintenanceRequestDirectory" DefaultValue="C:\PatchOrchestrationApplication\MaintenanceRequests" />
   </Parameters>
   <!-- Import the ServiceManifest from the ServicePackage. The ServiceManifestName and ServiceManifestVersion 
        should match the Name and Version attributes of the ServiceManifest element defined in the 
@@ -81,6 +83,7 @@
             <Parameter Name="WURescheduleTimeInMinutes" Value="[WURescheduleTimeInMinutes]" />
             <Parameter Name="WUFrequency" Value="[WUFrequency]" />
             <Parameter Name="AcceptWindowsUpdateEula" Value="[AcceptWindowsUpdateEula]" />
+            <Parameter Name="MaintenanceRequestDirectory" Value="[MaintenanceRequestDirectory]" />
           </Section>
         </Settings>
       </ConfigOverride>

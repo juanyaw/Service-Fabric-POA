@@ -27,5 +27,8 @@
     <Parameter Name="WUFrequency" Value="" MustOverride="true" />
     <!-- This flag enables the NodeAgentService to accept EULA for windows update on behalf of user -->
     <Parameter Name="AcceptWindowsUpdateEula" Value="" MustOverride="true" />
+	  
+	<!-- Folder where any maintenance requests can be placed that are outside of normal WU updates -->
+	<Parameter Name="MaintenanceRequestDirectory" Value="" MustOverride="true" />
   </Section>
 </Settings>

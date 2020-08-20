@@ -12,15 +12,13 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
 
     using System.ComponentModel;
     using System.IO;
-    using Microsoft.Win32;
+    using System.Linq;
 
     /// <summary>
     /// Manages the search, download and installation of Windows updates. It also takes care of restarting the system, if required after installation of updates.
     /// </summary>
     class WindowsUpdateManager
     {
-        private const string MaintenanceRegistryKey = @"SOFTWARE\Microsoft\Service Fabric\PatchOrchestration";
-
         private readonly ServiceEventSource _eventSource = ServiceEventSource.Current;
         private readonly OperationResultFormatter _operationResultFormatter;
         private readonly Helper _helper;
@@ -215,54 +213,66 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             }
         }
 
-        private enum MaintenanceRequest
+        private Tuple<MaintenanceRequest, DateTime> GetMaintenanceRequest()
         {
-            None = 0,
-            RestartServices = 1,
-            Reboot = 2
+            var maintenanceRequest = MaintenanceRequest.None;
+            var newestFileTimestamp = DateTime.MinValue;
+
+            try
+            {
+                var maintenanceRequestDirectory = new DirectoryInfo(this._serviceSettings.MaintenanceRequestDirectory);
+
+                if (maintenanceRequestDirectory.Exists)
+                {
+                    var requestFiles = maintenanceRequestDirectory.GetFiles();
+
+                    if (requestFiles.Any(file => file.Name.Contains(MaintenanceRequest.Reboot.ToString())))
+                    {
+                        maintenanceRequest = MaintenanceRequest.Reboot;
+                    }
+                    else if (requestFiles.Any(file => file.Name.Contains(MaintenanceRequest.RestartServices.ToString())))
+                    {
+                        maintenanceRequest = MaintenanceRequest.RestartServices;
+                    }
+
+                    newestFileTimestamp = requestFiles.OrderByDescending(file => file.LastWriteTimeUtc).FirstOrDefault()?.LastWriteTimeUtc ?? DateTime.MinValue;
+                }
+            }
+            catch (Exception e)
+            {
+                // Maintenance requests are best effort to not interfere with normal WU updates
+                // Still log an errors for diagnosis, but continue normally in failure cases
+                _eventSource.WarningMessage(String.Format("Failure occurred retrieving maintenance requests: {0}", e.Message));
+            }
+
+            return new Tuple<MaintenanceRequest, DateTime>(maintenanceRequest, newestFileTimestamp);
         }
 
-        private MaintenanceRequest GetMaintenanceCheck()
+        private void ResetMaintenanceCheck(DateTime maxFileLastWrite)
         {
-            MaintenanceRequest maintenanceRequest = MaintenanceRequest.None;
-            var key = Registry.LocalMachine.OpenSubKey(MaintenanceRegistryKey);
-            if (key != null)
+            try
             {
-                using (key)
-                {
-                    var currentRequestState = key.GetValue(null) as string;
+                var maintenanceRequestDirectory = new DirectoryInfo(this._serviceSettings.MaintenanceRequestDirectory);
+                var requestFiles = maintenanceRequestDirectory.GetFiles();
 
-                    if (string.IsNullOrWhiteSpace(currentRequestState) || !Enum.TryParse(currentRequestState, out maintenanceRequest))
+                foreach (var fileToDelete in requestFiles.Where(file => file.LastWriteTimeUtc <= maxFileLastWrite))
+                {
+                    try
                     {
-                        maintenanceRequest = MaintenanceRequest.None;
+                        fileToDelete.Delete();
+                    }
+                    catch (IOException e)
+                    {
+                        _eventSource.WarningMessage(String.Format("Failure to remove maintenance request file '{0}': {1}", fileToDelete.FullName, e.Message));
                     }
                 }
             }
-            return maintenanceRequest;
-        }
-
-        private MaintenanceRequest ResetMaintenanceCheck()
-        {
-            MaintenanceRequest maintenanceRequest = MaintenanceRequest.None;
-            var key = Registry.LocalMachine.OpenSubKey(MaintenanceRegistryKey, true);
-            if (key != null)
+            catch (Exception e)
             {
-                using (key)
-                {
-                    var currentRequestState = key.GetValue(null) as string;
-
-                    if (string.IsNullOrWhiteSpace(currentRequestState) || !Enum.TryParse(currentRequestState, out maintenanceRequest))
-                    {
-                        maintenanceRequest = MaintenanceRequest.None;
-                    }
-
-                    if (maintenanceRequest != MaintenanceRequest.None)
-                    {
-                        key.SetValue(null, string.Empty);
-                    }
-                }
+                // Maintenance requests are best effort to not interfere with normal WU updates
+                // Still log an errors for diagnosis, but continue normally in failure cases
+                _eventSource.WarningMessage(String.Format("Failure occurred resetting maintenance requests: {0}", e.Message));
             }
-            return maintenanceRequest;
         }
 
         /// <summary>
@@ -398,9 +408,9 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             NodeAgentSfUtilityExitCodes wuOperationState = this._nodeAgentSfUtility.GetWuOperationState(utilityTaskTimeOut);
             _eventSource.InfoMessage("Maintenance Request Check Started.");
 
-            var maintenanceRequest = GetMaintenanceCheck();
+            var maintenanceRequestInfo = GetMaintenanceRequest();
 
-            _eventSource.InfoMessage("Maintenance Request: {0}", maintenanceRequest);
+            _eventSource.InfoMessage("Maintenance Request: {0}", maintenanceRequestInfo.Item1);
 
             _eventSource.InfoMessage("Current WU Operation State : {0}", wuOperationState);
 
@@ -418,24 +428,34 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
                         {
                             if (this._wuCollectionWrapper.Collection.Count == 0)
                             {
-                                if (maintenanceRequest == MaintenanceRequest.RestartServices)
+                                // External maintenance request to cycle the services
+                                if (maintenanceRequestInfo.Item1 != MaintenanceRequest.None)
                                 {
-                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequest);
-                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(NodeAgentSfUtilityExitCodes.DownloadCompleted, null, utilityTaskTimeOut);
-                                    ResetMaintenanceCheck();
+                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequestInfo.Item1);
 
-                                    this._nodeAgentSfUtility.UpdateInstallationStatus(
-                                        NodeAgentSfUtilityExitCodes.OperationCompleted,
-                                        null,
-                                        utilityTaskTimeOut);
+                                    this._nodeAgentSfUtility.UpdateMaintenanceRequestStatus(maintenanceRequestInfo.Item1, utilityTaskTimeOut);
 
-                                }
-                                else if (maintenanceRequest == MaintenanceRequest.Reboot)
-                                {
-                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequest);
-                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(NodeAgentSfUtilityExitCodes.DownloadCompleted, null, utilityTaskTimeOut);
-                                    ResetMaintenanceCheck();
-                                    RestartSystem();
+                                    NodeAgentSfUtilityExitCodes maintenanceExitCodes = this.WaitForMaintenanceApproval(cancellationToken);
+                                    if (maintenanceExitCodes.Equals(NodeAgentSfUtilityExitCodes.Failure))
+                                    {
+                                        _eventSource.ErrorMessage("Not able to move to maintenance approval state.");
+                                        reschedule = true;
+                                        break;
+                                    }
+
+                                    ResetMaintenanceCheck(maintenanceRequestInfo.Item2);
+
+                                    if (maintenanceRequestInfo.Item1 == MaintenanceRequest.Reboot)
+                                    {
+                                        RestartSystem();
+                                    }
+                                    else
+                                    {
+                                        this._nodeAgentSfUtility.UpdateInstallationStatus(
+                                            NodeAgentSfUtilityExitCodes.OperationCompleted,
+                                            null,
+                                            utilityTaskTimeOut);
+                                    }
                                 }
                                 else
                                 {

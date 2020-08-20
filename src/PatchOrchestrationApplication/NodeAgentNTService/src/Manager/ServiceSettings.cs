@@ -95,6 +95,11 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         public bool AcceptWindowsUpdateEula { get; set; }
         
         /// <summary>
+        /// Gets or sets the folder to monitor for maintenance requests from services
+        /// </summary>
+        public string MaintenanceRequestDirectory { get; set; }
+
+        /// <summary>
         /// The frequency of installing Windows Updates.
         /// </summary>
         public Frequency Frequency { get; private set; }
