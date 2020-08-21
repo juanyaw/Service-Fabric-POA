@@ -103,6 +103,14 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentSFUtility
                         await this.GetApplicationDeployedStatusAsync(new Uri(args[1]), TimeSpan.FromSeconds(int.Parse(args[2])),
                             this.cancellationTokenSource.Token);
 
+                case "UpdateMaintenanceRequestStatus":
+                    return
+                        await this.UpdateMaintenanceRequestStatusAsync(
+                            args[1], 
+                            Convert.ToBoolean(args[2]), 
+                            int.Parse(args[3]), 
+                            TimeSpan.FromSeconds(int.Parse(args[4])), 
+                            this.cancellationTokenSource.Token);
                 default:
                 {
                     string errorMessage = String.Format("Unknown command = {0} recieved", args[0]);
@@ -217,6 +225,34 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentSFUtility
 
             ServiceEventSource.Current.InfoMessage("GetWuOperationStateAsync returned {0}", resultState);
             return resultState;
+        }
+
+        /// <summary>
+        /// Creates a repairtask for tracking an external maintenance request outside of Windows Updates
+        /// </summary>
+        /// <param name="nodeName">Name of current service fabric node</param>
+        /// <param name="rebootRequested">Flag indicating whether or not a reboot will be requested from this maintenance request</param>
+        /// <param name="maintenanceTimeout">Amout of time a node can undergo maintenance, during maintenance node would be in disabled state</param>
+        /// <param name="timeout">Timeout for the async operation</param>
+        /// <param name="cancellationToken">The cancellation token to canel the async operation</param>
+        /// <returns>Task containing result of operation, true for success, false for failure</returns>
+        public async Task<NodeAgentSfUtilityExitCodes> UpdateMaintenanceRequestStatusAsync(String nodeName, bool rebootRequested, int maintenanceTimeout, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            NodeAgentSfUtilityExitCodes result = await
+                RepairManagerHelper.CreateRepairTaskForNode(
+                    this.fabricClient,
+                    nodeName,
+                    String.Format("Creating this repair task to perform maintenance request for node (Reboot Requested: {0}", rebootRequested),
+                    String.Format("Maintenance request acknowledged for action @ {0}", DateTime.UtcNow),
+                    new ExecutorDataForRmTask()
+                    {
+                        ExecutorSubState = rebootRequested ? NodeAgentSfUtilityExitCodes.RestartRequested : NodeAgentSfUtilityExitCodes.RestartNotNeeded,
+                        ExecutorTimeoutInMinutes = maintenanceTimeout
+                    },
+                    timeout,
+                    cancellationToken);
+
+            return result;
         }
 
         /// <summary>

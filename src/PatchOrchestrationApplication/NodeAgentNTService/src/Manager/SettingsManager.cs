@@ -25,7 +25,8 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         private const string InstallWindowsOSOnlyUpdateName = "InstallWindowsOSOnlyUpdates";
         private const string WUQueryCategoryIdsName = "WUQueryCategoryIds";
         private const string AcceptWindowsUpdateEulaName = "AcceptWindowsUpdateEula";
-        
+        private const string MaintenanceRequestDirectoryName = "MaintenanceRequestDirectory";
+
         private const string SettingsFileName = "Settings.xml";
         private const string CopyOfSettingsFileName = "CopyOfSettings.xml";
         private const string TempCopyOfSettingsFileName = "TempCopyOfSettings.xml";
@@ -41,7 +42,8 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         private const bool DefaultDisableAutoUpdateSettingInOS = true;
         private const bool DefaultInstallWindowsOSOnlyUpdates = false;
         private const string DefaultWUQueryCategoryIds = "";
-        private const bool DefaultAcceptWindowsUpdateEula = true;        
+        private const bool DefaultAcceptWindowsUpdateEula = true;
+        private const string DefaultMaintenanceRequestDirectory = @"C:\PatchOrchestrationApplication\MaintenanceRequests";
 
         private readonly ServiceSettings _serviceSettings;
 
@@ -137,7 +139,8 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             this._serviceSettings.OperationTimeOutInMinutes = serviceSettings.OperationTimeOutInMinutes;
             this._serviceSettings.WUQueryCategoryIds = serviceSettings.WUQueryCategoryIds;
             this._serviceSettings.InstallWindowsOSOnlyUpdates = serviceSettings.InstallWindowsOSOnlyUpdates;
-            this._serviceSettings.AcceptWindowsUpdateEula = serviceSettings.AcceptWindowsUpdateEula;            
+            this._serviceSettings.AcceptWindowsUpdateEula = serviceSettings.AcceptWindowsUpdateEula;
+            this._serviceSettings.MaintenanceRequestDirectory = serviceSettings.MaintenanceRequestDirectory;
 
             this._serviceSettings.ParseSettings();
         }
@@ -177,7 +180,8 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             serviceSettings.OperationTimeOutInMinutes = this.GetParameter<long>(node, OperationTimeOutInMinutesName, DefaultOperationTimeOutInMinutes);
             serviceSettings.InstallWindowsOSOnlyUpdates = this.GetParameter<bool>(node, InstallWindowsOSOnlyUpdateName, DefaultInstallWindowsOSOnlyUpdates);
             serviceSettings.WUQueryCategoryIds = this.GetParameter<string>(node, WUQueryCategoryIdsName, DefaultWUQueryCategoryIds);
-            serviceSettings.AcceptWindowsUpdateEula = this.GetParameter<bool>(node, AcceptWindowsUpdateEulaName, DefaultAcceptWindowsUpdateEula);            
+            serviceSettings.AcceptWindowsUpdateEula = this.GetParameter<bool>(node, AcceptWindowsUpdateEulaName, DefaultAcceptWindowsUpdateEula);
+            serviceSettings.MaintenanceRequestDirectory = this.GetParameter<string>(node, MaintenanceRequestDirectoryName, DefaultMaintenanceRequestDirectory);
 
             serviceSettings.ParseSettings();
 

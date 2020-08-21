@@ -152,6 +152,17 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.Common
         Task<NodeAgentSfUtilityExitCodes> GetWuOperationStateAsync(string nodeName, TimeSpan timeout, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Creates a repairtask for tracking an external maintenance request outside of Windows Updates
+        /// </summary>
+        /// <param name="nodeName">Name of current service fabric node</param>
+        /// <param name="rebootRequested">Flag indicating whether or not a reboot will be requested from this maintenance request</param>
+        /// <param name="maintenanceTimeout">Amout of time a node can undergo maintenance, during maintenance node would be in disabled state</param>
+        /// <param name="timeout">Timeout for the async operation</param>
+        /// <param name="cancellationToken">The cancellation token to canel the async operation</param>
+        /// <returns>Task containing result of operation, true for success, false for failure</returns>
+        Task<NodeAgentSfUtilityExitCodes> UpdateMaintenanceRequestStatusAsync(string nodeNmae, bool rebootRequested, int maintenanceTimeout, TimeSpan timeout, CancellationToken cancellationToken);
+
+        /// <summary>
         /// Updates the status of search and download operation
         /// </summary>
         /// <param name="nodeName">Name of current Service Fabric node</param>

@@ -12,6 +12,7 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
 
     using System.ComponentModel;
     using System.IO;
+    using System.Linq;
 
     /// <summary>
     /// Manages the search, download and installation of Windows updates. It also takes care of restarting the system, if required after installation of updates.
@@ -212,6 +213,68 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             }
         }
 
+        private Tuple<MaintenanceRequest, DateTime> GetMaintenanceRequest()
+        {
+            var maintenanceRequest = MaintenanceRequest.None;
+            var newestFileTimestamp = DateTime.MinValue;
+
+            try
+            {
+                var maintenanceRequestDirectory = new DirectoryInfo(this._serviceSettings.MaintenanceRequestDirectory);
+
+                if (maintenanceRequestDirectory.Exists)
+                {
+                    var requestFiles = maintenanceRequestDirectory.GetFiles();
+
+                    if (requestFiles.Any(file => file.Name.Contains(MaintenanceRequest.Reboot.ToString())))
+                    {
+                        maintenanceRequest = MaintenanceRequest.Reboot;
+                    }
+                    else if (requestFiles.Any(file => file.Name.Contains(MaintenanceRequest.RestartServices.ToString())))
+                    {
+                        maintenanceRequest = MaintenanceRequest.RestartServices;
+                    }
+
+                    newestFileTimestamp = requestFiles.OrderByDescending(file => file.LastWriteTimeUtc).FirstOrDefault()?.LastWriteTimeUtc ?? DateTime.MinValue;
+                }
+            }
+            catch (Exception e)
+            {
+                // Maintenance requests are best effort to not interfere with normal WU updates
+                // Still log an errors for diagnosis, but continue normally in failure cases
+                _eventSource.WarningMessage(String.Format("Failure occurred retrieving maintenance requests: {0}", e.Message));
+            }
+
+            return new Tuple<MaintenanceRequest, DateTime>(maintenanceRequest, newestFileTimestamp);
+        }
+
+        private void ResetMaintenanceCheck(DateTime maxFileLastWrite)
+        {
+            try
+            {
+                var maintenanceRequestDirectory = new DirectoryInfo(this._serviceSettings.MaintenanceRequestDirectory);
+                var requestFiles = maintenanceRequestDirectory.GetFiles();
+
+                foreach (var fileToDelete in requestFiles.Where(file => file.LastWriteTimeUtc <= maxFileLastWrite))
+                {
+                    try
+                    {
+                        fileToDelete.Delete();
+                    }
+                    catch (IOException e)
+                    {
+                        _eventSource.WarningMessage(String.Format("Failure to remove maintenance request file '{0}': {1}", fileToDelete.FullName, e.Message));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                // Maintenance requests are best effort to not interfere with normal WU updates
+                // Still log an errors for diagnosis, but continue normally in failure cases
+                _eventSource.WarningMessage(String.Format("Failure occurred resetting maintenance requests: {0}", e.Message));
+            }
+        }
+
         /// <summary>
         /// This function tries to stop the Fabric services explicitly before shutting down machine.
         /// </summary>
@@ -324,8 +387,9 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         }
 
         private bool StartUpdateUtil(CancellationToken cancellationToken)
-        {
+        { 
             _eventSource.InfoMessage("Windows Update Started.");
+
             try
             {
                 return HandleWUOperationStates(cancellationToken);
@@ -342,6 +406,12 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
         {
             TimeSpan utilityTaskTimeOut = TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes);
             NodeAgentSfUtilityExitCodes wuOperationState = this._nodeAgentSfUtility.GetWuOperationState(utilityTaskTimeOut);
+            _eventSource.InfoMessage("Maintenance Request Check Started.");
+
+            var maintenanceRequestInfo = GetMaintenanceRequest();
+
+            _eventSource.InfoMessage("Maintenance Request: {0}", maintenanceRequestInfo.Item1);
+
             _eventSource.InfoMessage("Current WU Operation State : {0}", wuOperationState);
 
             bool reschedule = false;
@@ -358,14 +428,45 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
                         {
                             if (this._wuCollectionWrapper.Collection.Count == 0)
                             {
-                                _eventSource.InfoMessage("No Windows Update available. Completing the operation.");
-                                //Complete operation.
-                                this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(
-                                    NodeAgentSfUtilityExitCodes.OperationCompleted,
-                                    this._operationResultFormatter.CreateSearchAndDownloadDummyResult(this.lastUpdateOperationStartTimeStamp),
-                                    utilityTaskTimeOut
-                                );
+                                // External maintenance request to cycle the services
+                                if (maintenanceRequestInfo.Item1 != MaintenanceRequest.None)
+                                {
+                                    _eventSource.InfoMessage("No Windows Update available, but maintenance request present: {0}.", maintenanceRequestInfo.Item1);
 
+                                    this._nodeAgentSfUtility.UpdateMaintenanceRequestStatus(maintenanceRequestInfo.Item1, utilityTaskTimeOut);
+
+                                    NodeAgentSfUtilityExitCodes maintenanceExitCodes = this.WaitForMaintenanceApproval(cancellationToken);
+                                    if (maintenanceExitCodes.Equals(NodeAgentSfUtilityExitCodes.Failure))
+                                    {
+                                        _eventSource.ErrorMessage("Not able to move to maintenance approval state.");
+                                        reschedule = true;
+                                        break;
+                                    }
+
+                                    ResetMaintenanceCheck(maintenanceRequestInfo.Item2);
+
+                                    if (maintenanceRequestInfo.Item1 == MaintenanceRequest.Reboot)
+                                    {
+                                        RestartSystem();
+                                    }
+                                    else
+                                    {
+                                        this._nodeAgentSfUtility.UpdateInstallationStatus(
+                                            NodeAgentSfUtilityExitCodes.OperationCompleted,
+                                            null,
+                                            utilityTaskTimeOut);
+                                    }
+                                }
+                                else
+                                {
+                                    _eventSource.InfoMessage("No Windows Update available. Completing the operation.");
+                                    //Complete operation.
+                                    this._nodeAgentSfUtility.UpdateSearchAndDownloadStatus(
+                                        NodeAgentSfUtilityExitCodes.OperationCompleted,
+                                        this._operationResultFormatter.CreateSearchAndDownloadDummyResult(this.lastUpdateOperationStartTimeStamp),
+                                        utilityTaskTimeOut
+                                    );
+                                }
                                 break;
                             }
                             string wUStatusUpdate = string.Format("Windows update download started.");
@@ -488,26 +589,30 @@ namespace Microsoft.ServiceFabric.PatchOrchestration.NodeAgentNTService.Manager
             return reschedule;
         }
 
-        private NodeAgentSfUtilityExitCodes WaitForInstallationApproval(CancellationToken cancellationToken)
+        private NodeAgentSfUtilityExitCodes WaitForInstallationApproval(CancellationToken cancellationToken) => WaitForNodeActionApproval("Installation", cancellationToken);
+
+        private NodeAgentSfUtilityExitCodes WaitForMaintenanceApproval(CancellationToken cancellationToken) => WaitForNodeActionApproval("Maintenance", cancellationToken);
+
+        private NodeAgentSfUtilityExitCodes WaitForNodeActionApproval(string action, CancellationToken cancellationToken)
         {
-            _eventSource.InfoMessage("Waiting for Installation approval.");
+            _eventSource.InfoMessage($"Waiting for {action} approval.");
             while (!cancellationToken.IsCancellationRequested)
             {
-                NodeAgentSfUtilityExitCodes wuOperationState = this._nodeAgentSfUtility.GetWuOperationState(TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes));
+                NodeAgentSfUtilityExitCodes operationState = this._nodeAgentSfUtility.GetWuOperationState(TimeSpan.FromMinutes(this._serviceSettings.OperationTimeOutInMinutes));
 
-                if (wuOperationState.Equals(NodeAgentSfUtilityExitCodes.InstallationApproved)) 
+                if (operationState.Equals(NodeAgentSfUtilityExitCodes.InstallationApproved))
                 {
-                    _eventSource.InfoMessage("Installation Approved.");
-                    return wuOperationState;
+                    _eventSource.InfoMessage($"{action} Approved.");
+                    return operationState;
                 }
-                else if(wuOperationState.Equals(NodeAgentSfUtilityExitCodes.OperationCompleted) || wuOperationState.Equals(NodeAgentSfUtilityExitCodes.None))
+                else if (operationState.Equals(NodeAgentSfUtilityExitCodes.OperationCompleted) || operationState.Equals(NodeAgentSfUtilityExitCodes.None))
                 {
-                    _eventSource.InfoMessage("Installation Approval failed.");
+                    _eventSource.InfoMessage($"{action} Approval failed.");
                     return NodeAgentSfUtilityExitCodes.Failure;
                 }
                 this._helper.WaitOnTask(Task.Delay(TimeSpan.FromMinutes(this._serviceSettings.WUDelayBetweenRetriesInMinutes)), cancellationToken);
             }
-            _eventSource.InfoMessage("Installation Approval failed.");
+            _eventSource.InfoMessage($"{action} Approval failed.");
             return NodeAgentSfUtilityExitCodes.Failure;
         }
 
